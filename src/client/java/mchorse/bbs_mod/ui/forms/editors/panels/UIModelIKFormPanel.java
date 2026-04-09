@@ -275,7 +275,7 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
         this.poleY.setEnabled(canEdit);
         this.poleZ.setEnabled(canEdit);
         this.clear.setEnabled(this.bones.isEnabled() && !this.selectedBone.isEmpty() && data != null);
-        this.apply.setEnabled(this.bones.isEnabled() && this.modelId != null && !this.modelId.isEmpty());
+        this.apply.setEnabled(this.bones.isEnabled() && this.form != null);
     }
 
     private IKData getOrCreateData(String bone)
@@ -292,7 +292,11 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
     {
         this.ikData.clear();
 
-        ModelIKConfig config = this.modelId == null ? null : ModelIKIO.read(this.modelId);
+        ModelIKConfig config = null;
+        if (this.form != null && this.form.ik.get() instanceof mchorse.bbs_mod.data.types.MapType map)
+        {
+            config = ModelIKIO.fromData(map);
+        }
 
         if (config == null || config.chains() == null)
         {
@@ -319,7 +323,7 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
 
     private void save()
     {
-        if (this.modelId == null || this.modelId.isEmpty())
+        if (this.form == null)
         {
             this.getContext().notifyError(UIKeys.FORMS_EDITORS_MODEL_IK_SAVE_ERROR);
             return;
@@ -345,13 +349,8 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
             out.add(new ModelIKConfig.Chain(controller, data.locator, data.root, data.enabled, data.poleX, data.poleY, data.poleZ, ModelIKConfig.PoleSpace.ROOT));
         }
 
-        if (ModelIKIO.write(this.modelId, out.isEmpty() ? null : new ModelIKConfig(out)))
-        {
-            this.getContext().notifySuccess(UIKeys.FORMS_EDITORS_MODEL_IK_SAVED);
-        }
-        else
-        {
-            this.getContext().notifyError(UIKeys.FORMS_EDITORS_MODEL_IK_SAVE_ERROR);
-        }
+        ModelIKConfig config = out.isEmpty() ? null : new ModelIKConfig(out);
+        this.form.ik.set(config == null ? null : ModelIKIO.toData(config));
+        this.getContext().notifySuccess(UIKeys.FORMS_EDITORS_MODEL_IK_SAVED);
     }
 }

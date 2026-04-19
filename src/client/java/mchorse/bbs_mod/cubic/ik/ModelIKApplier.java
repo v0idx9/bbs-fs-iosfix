@@ -23,7 +23,7 @@ final class ModelIKApplier
     {
     }
 
-    public static void apply(Model model, List<ModelIKCache.CompiledChain> chains, Map<String, Vector3f> controllerTargets, Map<String, Vector3f> prevNormals, float hysteresisRad, float singularityRad)
+    public static void apply(Model model, List<ModelIKCache.CompiledChain> chains, Map<String, Vector3f> controllerTargets, Map<String, Vector3f> prevNormals, float hysteresisRad, float singularityRad, Map<String, Float> poseFixByBone)
     {
         if (model == null || chains == null || chains.isEmpty())
         {
@@ -48,13 +48,14 @@ final class ModelIKApplier
 
         for (ModelIKCache.CompiledChain chain : chains)
         {
-            applyChain(model, chain, frames, controllerTargets, prevNormals, hysteresisRad, singularityRad);
+            applyChain(model, chain, frames, controllerTargets, prevNormals, hysteresisRad, singularityRad, poseFixByBone);
         }
     }
 
-    private static void applyChain(Model model, ModelIKCache.CompiledChain chain, Map<String, PivotFrame> frames, Map<String, Vector3f> controllerTargets, Map<String, Vector3f> prevNormals, float hysteresisRad, float singularityRad)
+    private static void applyChain(Model model, ModelIKCache.CompiledChain chain, Map<String, PivotFrame> frames, Map<String, Vector3f> controllerTargets, Map<String, Vector3f> prevNormals, float hysteresisRad, float singularityRad, Map<String, Float> poseFixByBone)
     {
-        float weight = chain.weight();
+        float poseFix = getChainPoseFix(chain, poseFixByBone);
+        float weight = chain.weight() * (1F - poseFix);
 
         if (weight <= 0F)
         {
@@ -138,5 +139,44 @@ final class ModelIKApplier
                 store.set(n);
             }
         }
+    }
+
+    private static float getChainPoseFix(ModelIKCache.CompiledChain chain, Map<String, Float> poseFixByBone)
+    {
+        if (poseFixByBone == null || poseFixByBone.isEmpty() || chain == null)
+        {
+            return 0F;
+        }
+
+        float maxFix = getFix(poseFixByBone, chain.controller());
+
+        for (String bone : chain.chainRootToEffector())
+        {
+            maxFix = Math.max(maxFix, getFix(poseFixByBone, bone));
+
+            if (maxFix >= 1F)
+            {
+                return 1F;
+            }
+        }
+
+        return maxFix;
+    }
+
+    private static float getFix(Map<String, Float> poseFixByBone, String bone)
+    {
+        Float value = poseFixByBone.get(bone);
+
+        if (value == null)
+        {
+            return 0F;
+        }
+
+        if (value <= 0F)
+        {
+            return 0F;
+        }
+
+        return Math.min(value, 1F);
     }
 }

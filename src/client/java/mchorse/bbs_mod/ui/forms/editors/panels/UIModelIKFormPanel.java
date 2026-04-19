@@ -3,6 +3,7 @@ package mchorse.bbs_mod.ui.forms.editors.panels;
 import mchorse.bbs_mod.cubic.ModelInstance;
 import mchorse.bbs_mod.cubic.ik.ModelIKConfig;
 import mchorse.bbs_mod.cubic.ik.ModelIKIO;
+import mchorse.bbs_mod.data.types.MapType;
 import mchorse.bbs_mod.forms.forms.ModelForm;
 import mchorse.bbs_mod.forms.renderers.ModelFormRenderer;
 import mchorse.bbs_mod.l10n.keys.IKey;
@@ -14,8 +15,10 @@ import mchorse.bbs_mod.ui.framework.elements.input.UITrackpad;
 import mchorse.bbs_mod.ui.framework.elements.input.list.UIStringList;
 import mchorse.bbs_mod.ui.utils.UI;
 import mchorse.bbs_mod.ui.utils.UIConstants;
+import mchorse.bbs_mod.ui.utils.presets.UIDataContextMenu;
 import mchorse.bbs_mod.ui.utils.icons.Icons;
 import mchorse.bbs_mod.utils.colors.Colors;
+import mchorse.bbs_mod.utils.pose.ModelIKManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -36,6 +39,7 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
 
     private String selectedBone = "";
     private Map<String, IKData> ikData = new HashMap<>();
+    private String presetGroup = "";
     private boolean syncingUI;
 
     private static class IKData
@@ -60,6 +64,13 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
             this.updateLabels();
         });
         this.bones.background().h(UIConstants.LIST_ITEM_HEIGHT * 8);
+        this.bones.context(() -> new UIDataContextMenu(ModelIKManager.INSTANCE, this.presetGroup, this::toPresetData, this::applyPresetData).tooltips("_CopyModelIK",
+            UIKeys.FORMS_EDITORS_MODEL_IK_CONTEXT_COPY,
+            UIKeys.FORMS_EDITORS_MODEL_IK_CONTEXT_PASTE,
+            UIKeys.FORMS_EDITORS_MODEL_IK_CONTEXT_RESET,
+            UIKeys.FORMS_EDITORS_MODEL_IK_CONTEXT_SAVE,
+            UIKeys.FORMS_EDITORS_MODEL_IK_CONTEXT_NAME
+        ));
 
         this.enabled = new UIToggle(UIKeys.FORMS_EDITORS_MODEL_IK_ENABLED, (b) ->
         {
@@ -161,6 +172,7 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
         super.startEdit(form);
 
         ModelInstance model = ModelFormRenderer.getModel(form);
+        this.presetGroup = this.resolvePresetGroup(form, model);
 
         if (model == null || model.model == null)
         {
@@ -284,22 +296,35 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
 
     private void load()
     {
-        this.ikData.clear();
-
         ModelIKConfig config = null;
-        if (this.form != null && this.form.ik.get() instanceof mchorse.bbs_mod.data.types.MapType map)
+        if (this.form != null && this.form.ik.get() instanceof MapType map)
         {
             config = ModelIKIO.fromData(map);
         }
+
+        this.load(config);
+    }
+
+    private void load(ModelIKConfig config)
+    {
+        this.ikData.clear();
 
         if (config == null || config.chains() == null)
         {
             return;
         }
 
+        List<String> bones = this.bones.getList();
+        boolean filterByBones = bones != null && !bones.isEmpty();
+
         for (ModelIKConfig.Chain chain : config.chains())
         {
             if (chain == null || chain.controller() == null || chain.controller().isEmpty())
+            {
+                continue;
+            }
+
+            if (filterByBones && (!bones.contains(chain.controller()) || !bones.contains(chain.locator()) || !bones.contains(chain.root())))
             {
                 continue;
             }
@@ -315,13 +340,10 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
         }
     }
 
-    private void commitChanges()
+    private MapType toPresetData()
     {
-        if (this.form == null)
-        {
-            return;
-        }
-
+        List<String> bones = this.bones.getList();
+        boolean filterByBones = bones != null && !bones.isEmpty();
         List<ModelIKConfig.Chain> out = new ArrayList<>();
 
         for (Map.Entry<String, IKData> entry : this.ikData.entrySet())
@@ -339,10 +361,68 @@ public class UIModelIKFormPanel extends UIFormPanel<ModelForm>
                 continue;
             }
 
+            if (filterByBones && (!bones.contains(controller) || !bones.contains(data.locator) || !bones.contains(data.root)))
+            {
+                continue;
+            }
+
             out.add(new ModelIKConfig.Chain(controller, data.locator, data.root, data.enabled, data.poleX, data.poleY, data.poleZ, ModelIKConfig.PoleSpace.ROOT, ModelIKConfig.DEFAULT_WEIGHT));
         }
 
-        ModelIKConfig config = out.isEmpty() ? null : new ModelIKConfig(out);
-        this.form.ik.set(config == null ? null : ModelIKIO.toData(config));
+        if (out.isEmpty())
+        {
+            return new MapType();
+        }
+
+        return ModelIKIO.toData(new ModelIKConfig(out));
+    }
+
+    private void applyPresetData(MapType map)
+    {
+        String current = this.selectedBone;
+
+        this.load(ModelIKIO.fromData(map));
+
+        if (current == null || current.isEmpty() || !this.bones.getList().contains(current))
+        {
+            current = this.bones.getList().isEmpty() ? "" : this.bones.getList().get(0);
+        }
+
+        this.selectedBone = current;
+
+        if (current.isEmpty())
+        {
+            this.bones.deselect();
+        }
+        else
+        {
+            this.bones.setCurrentScroll(current);
+        }
+
+        this.updateLabels();
+        this.commitChanges();
+    }
+
+    private void commitChanges()
+    {
+        if (this.form == null)
+        {
+            return;
+        }
+
+        MapType map = this.toPresetData();
+        this.form.ik.set(map.isEmpty() ? null : map);
+    }
+
+    private String resolvePresetGroup(ModelForm form, ModelInstance model)
+    {
+        String group = model != null ? model.poseGroup : "";
+
+        if (group == null || group.isEmpty())
+        {
+            group = form == null ? "" : form.model.get();
+        }
+
+        return group == null ? "" : group;
     }
 }

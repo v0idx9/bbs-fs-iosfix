@@ -98,6 +98,7 @@ public class UIFilmController extends UIElement
     public static final int CAMERA_MODE_FIRST_PERSON = 3;
     public static final int CAMERA_MODE_THIRD_PERSON_BACK = 4;
     public static final int CAMERA_MODE_THIRD_PERSON_FRONT = 5;
+    private static final int REPLAY_STENCIL_OFFSET = Gizmo.STENCIL_XYZ + 1;
 
     public final UIFilmPanel panel;
 
@@ -121,7 +122,7 @@ public class UIFilmController extends UIElement
     private boolean instantKeyframes;
 
     /* Replay and group picking */
-    private IEntity hoveredEntity;
+    private int hoveredReplayIndex = -1;
     private StencilFormFramebuffer stencil = new StencilFormFramebuffer();
     private StencilMap stencilMap = new StencilMap();
     private boolean gizmoActive;
@@ -251,6 +252,18 @@ public class UIFilmController extends UIElement
         return this.panel.replayEditor.getReplay();
     }
 
+    private int getCurrentReplayIndex()
+    {
+        if (this.panel.getData() == null)
+        {
+            return -1;
+        }
+
+        Replay replay = this.getReplay();
+
+        return replay == null ? -1 : this.panel.getData().replays.getList().indexOf(replay);
+    }
+
     public StencilFormFramebuffer getStencil()
     {
         return this.stencil;
@@ -258,19 +271,7 @@ public class UIFilmController extends UIElement
 
     public IEntity getCurrentEntity()
     {
-        if (this.panel.getData() == null)
-        {
-            return null;
-        }
-
-        Replay r = this.panel.replayEditor.getReplay();
-
-        if (r == null)
-        {
-            return null;
-        }
-
-        int idx = this.panel.getData().replays.getList().indexOf(r);
+        int idx = this.getCurrentReplayIndex();
 
         return idx < 0 ? null : this.getEntities().get(idx);
     }
@@ -587,9 +588,9 @@ public class UIFilmController extends UIElement
         if (context.mouseButton == 0)
         {
             /* Alt pick the replay */
-            if (this.hoveredEntity != null)
+            if (this.hoveredReplayIndex >= 0)
             {
-                this.pickEntity(this.hoveredEntity);
+                this.pickReplay(this.hoveredReplayIndex);
 
                 return true;
             }
@@ -598,16 +599,25 @@ public class UIFilmController extends UIElement
         return super.subMouseClicked(context);
     }
 
-    private void pickEntity(IEntity entity)
+    private void pickReplay(int index)
     {
-        int index = CollectionUtils.getKey(this.getEntities(), entity);
-
         this.panel.replayEditor.setReplay(this.panel.getData().replays.getList().get(index));
 
         if (!this.panel.replayEditor.isVisible())
         {
             this.panel.showPanel(this.panel.replayEditor);
         }
+    }
+
+    public void stopGizmoInteraction()
+    {
+        if (!this.gizmoActive)
+        {
+            return;
+        }
+
+        Gizmo.INSTANCE.stop();
+        this.gizmoActive = false;
     }
 
     @Override
@@ -618,11 +628,7 @@ public class UIFilmController extends UIElement
             return true;
         }
 
-        if (this.gizmoActive)
-        {
-            Gizmo.INSTANCE.stop();
-            this.gizmoActive = false;
-        }
+        this.stopGizmoInteraction();
 
         this.orbit.stop();
 
@@ -1149,7 +1155,7 @@ public class UIFilmController extends UIElement
 
         RenderSystem.depthFunc(GL11.GL_ALWAYS);
 
-        this.hoveredEntity = null;
+        this.hoveredReplayIndex = -1;
 
         if (!this.stencil.hasPicked())
         {
@@ -1176,13 +1182,25 @@ public class UIFilmController extends UIElement
 
         if (altPressed)
         {
-            int stencilIndex = this.stencil.getIndex() - 7;
+            int selectedReplayIndex = this.getCurrentReplayIndex();
+            int stencilIndex = index - REPLAY_STENCIL_OFFSET;
 
-            this.hoveredEntity = this.getEntities().get(stencilIndex);
-
-            if (this.hoveredEntity != null)
+            if (stencilIndex >= 0 && stencilIndex < this.panel.getData().replays.getList().size() && stencilIndex != selectedReplayIndex)
             {
+                this.hoveredReplayIndex = stencilIndex;
+
                 String label = this.panel.getData().replays.getList().get(stencilIndex).getName();
+
+                context.batcher.textCard(label, context.mouseX + 12, context.mouseY + 8);
+            }
+            else if (pair != null && pair.a != null)
+            {
+                String label = pair.a.getFormIdOrName();
+
+                if (!pair.b.isEmpty())
+                {
+                    label += " - " + pair.b;
+                }
 
                 context.batcher.textCard(label, context.mouseX + 12, context.mouseY + 8);
             }
@@ -1289,28 +1307,51 @@ public class UIFilmController extends UIElement
         Texture mainTexture = this.stencil.getFramebuffer().getMainTexture();
 
         this.stencilMap.setup();
-        this.stencilMap.setIncrement(!altPressed);
         this.stencil.apply();
 
         if (altPressed)
         {
+            List<Replay> replays = this.panel.getData().replays.getList();
+            int selectedReplayIndex = this.getCurrentReplayIndex();
+            Pair<String, Boolean> bone = this.getBone();
+
             for (Map.Entry<Integer, IEntity> entry : this.getEntities().entrySet())
             {
-                this.stencilMap.objectIndex = entry.getKey() + 7;
+                Replay replay = CollectionUtils.getSafe(replays, entry.getKey());
 
-                Replay replay = CollectionUtils.getSafe(this.panel.getData().replays.getList(), entry.getKey());
+                if (replay == null)
+                {
+                    continue;
+                }
 
-                BaseFilmController.renderEntity(FilmControllerContext.instance
+                FilmControllerContext filmContext = FilmControllerContext.instance
                     .setup(this.getEntities(), entry.getValue(), replay, renderContext)
                     .transition(isPlaying ? renderContext.tickDelta() : 0)
                     .stencil(this.stencilMap)
-                    .relative(replay.relative.get()));
+                    .relative(replay.relative.get());
+
+                if (entry.getKey() == selectedReplayIndex)
+                {
+                    this.stencilMap.objectIndex = replays.size() + REPLAY_STENCIL_OFFSET;
+                    this.stencilMap.setIncrement(true);
+
+                    filmContext.bone(bone == null ? null : bone.a, bone != null && bone.b);
+                }
+                else
+                {
+                    this.stencilMap.objectIndex = entry.getKey() + REPLAY_STENCIL_OFFSET;
+                    this.stencilMap.setIncrement(false);
+                }
+
+                BaseFilmController.renderEntity(filmContext);
             }
         }
         else
         {
             Replay replay = this.panel.replayEditor.getReplay();
             Pair<String, Boolean> bone = this.getBone();
+
+            this.stencilMap.setIncrement(true);
 
             BaseFilmController.renderEntity(FilmControllerContext.instance
                 .setup(this.getEntities(), entity, replay, renderContext)

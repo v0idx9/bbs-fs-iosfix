@@ -84,6 +84,7 @@ import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
 import org.joml.Vector2i;
 import org.joml.Vector3d;
+import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -130,7 +131,7 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
     public UIIcon openReplayEditor;
     public UIIcon openActionEditor;
 
-    /** When true, docking and resizing are disabled; drag handles and their top offset are hidden. */
+    /** When true, docking is disabled; panel drag handles and their top offset are hidden. */
     private boolean layoutLocked = true;
 
     private UICopyPasteController layoutPresetsController;
@@ -163,7 +164,9 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
     private final Map<String, UIDraggable> dragHandlesById = new LinkedHashMap<>();
     private static final float DRAG_HANDLE_HEIGHT_NORM = 0.02F;
     private static final float DRAG_HANDLE_TOP_OFFSET_NORM = 0.01F;
-    private static final int SPLITTER_HANDLE_PX = 6;
+    private static final int SPLITTER_HANDLE_PX = 14;
+    private static final int SPLITTER_HANDLE_LINE_PX = 1;
+    private static final int SPLITTER_LINK_HITBOX_PADDING_PX = 8;
     private static final int DROP_ZONE_CENTER = -1;
     private static final float DROP_EDGE_MARGIN = 0.2F;
     private static final int EDITOR_MIN_SIZE_FOR_PX_HANDLES = 10;
@@ -187,6 +190,7 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
     private String draggingPanelId;
     private String dropTargetPanelId;
     private int dropTargetZone = DROP_ZONE_CENTER;
+    private final List<Integer> draggedSplitterIndices = new ArrayList<>();
 
     private static class DockStackInfo
     {
@@ -270,6 +274,11 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
             if (!this.isVisible() || this.panelIds.isEmpty())
             {
                 return;
+            }
+
+            if (this.area.isInside(context))
+            {
+                context.requestCursor(GLFW.GLFW_HAND_CURSOR);
             }
 
             int tabSize = this.getTabSize();
@@ -765,6 +774,7 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
     {
         this.layoutLocked = !this.layoutLocked;
         this.clearPanelDragState();
+        this.clearSplitterDragState();
         this.setupEditorFlex(true);
         this.refreshEditPanelOffsets();
     }
@@ -910,6 +920,7 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
     private void resetFilmLayout()
     {
         this.clearPanelDragState();
+        this.clearSplitterDragState();
         BBSSettings.editorLayoutSettings.setFilmLayoutRoot(EditorLayoutNode.defaultFilmLayout());
         this.setupEditorFlex(true);
     }
@@ -927,13 +938,15 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
 
         List<EditorLayoutNode.SplitterNode> splitters = layout.getFilmSplitters();
 
-        if (!this.layoutLocked && resize && splitters.size() == this.splitterHandles.size())
+        if (resize && splitters.size() == this.splitterHandles.size())
         {
             this.updateEditorFlexBoundsOnly(root);
             this.resize();
             this.resize();
             return;
         }
+
+        this.clearSplitterDragState();
 
         List<DockStackInfo> stackInfos = new ArrayList<>();
         this.collectDockStacks(root, 0F, 0F, 1F, 1F, stackInfos);
@@ -966,6 +979,17 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
         this.applyPanelBoundsFromStacks(stackInfos);
         this.rebuildDockStackTabs(stackInfos);
 
+        this.splitterHandleInfos.clear();
+        EditorLayoutNode.computeSplitterHandles(root, 0F, 0F, 1F, 1F, this.splitterHandleInfos);
+
+        for (int i = 0; i < splitters.size(); i++)
+        {
+            UIDraggable handle = this.createSplitterHandle(layout, splitters, i);
+            this.splitterHandles.add(handle);
+            IUIElement insertAfter = i == 0 ? this.main : this.splitterHandles.get(i - 1);
+            this.editor.addAfter(insertAfter, handle);
+        }
+
         if (this.layoutLocked)
         {
             for (UIDraggable h : this.dragHandlesById.values())
@@ -975,30 +999,6 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
         }
         else
         {
-            this.splitterHandleInfos.clear();
-            EditorLayoutNode.computeSplitterHandles(root, 0F, 0F, 1F, 1F, this.splitterHandleInfos);
-
-            for (int i = 0; i < splitters.size(); i++)
-            {
-                final int index = i;
-                UIDraggable handle = new UIDraggable((context) ->
-                {
-                    float ratio = this.getSplitterRatioFromMouse(index, context.mouseX, context.mouseY);
-                    if (ratio >= 0F)
-                    {
-                        layout.setFilmSplitterRatio(index, ratio);
-                        this.setupEditorFlex(true);
-                    }
-                });
-                handle.hoverOnly().dragEnd(this::applyPreviewSizeToBBS);
-                handle.reference(() -> this.getSplitterHandleReferencePosition(index, splitters));
-                handle.rendering((context) -> this.renderSplitter(context, index));
-                this.applySplitterHandleBounds(handle, this.splitterHandleInfos.get(index));
-                this.splitterHandles.add(handle);
-                IUIElement insertAfter = index == 0 ? this.main : this.splitterHandles.get(index - 1);
-                this.editor.addAfter(insertAfter, handle);
-            }
-
             this.applyDragHandleBoundsFromStacks(stackInfos);
         }
 
@@ -1086,6 +1086,116 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
         for (int i = 0; i < this.splitterHandles.size() && i < this.splitterHandleInfos.size(); i++)
         {
             this.applySplitterHandleBounds(this.splitterHandles.get(i), this.splitterHandleInfos.get(i));
+        }
+    }
+
+    private UIDraggable createSplitterHandle(ValueEditorLayout layout, List<EditorLayoutNode.SplitterNode> splitters, int index)
+    {
+        UIDraggable handle = new UIDraggable((context) -> this.applySplitterDrag(layout, context.mouseX, context.mouseY))
+        {
+            @Override
+            protected boolean subMouseClicked(UIContext context)
+            {
+                UIFilmPanel.this.beginSplitterDrag(index, context.mouseX, context.mouseY);
+                boolean handled = super.subMouseClicked(context);
+
+                if (!handled)
+                {
+                    UIFilmPanel.this.clearSplitterDragState();
+                }
+
+                return handled;
+            }
+        };
+
+        handle.dragEnd(() ->
+        {
+            this.clearSplitterDragState();
+            this.applyPreviewSizeToBBS();
+        });
+        handle.reference(() -> this.getSplitterHandleReferencePosition(index, splitters))
+            .referenceAxis(!this.splitterHandleInfos.get(index).horizontal, this.splitterHandleInfos.get(index).horizontal);
+        handle.rendering((context) -> this.renderSplitter(context, index));
+        this.applySplitterHandleBounds(handle, this.splitterHandleInfos.get(index));
+
+        return handle;
+    }
+
+    private void beginSplitterDrag(int index, int mouseX, int mouseY)
+    {
+        if (index < 0 || index >= this.splitterHandleInfos.size())
+        {
+            this.clearSplitterDragState();
+            return;
+        }
+
+        this.draggedSplitterIndices.clear();
+        this.draggedSplitterIndices.add(index);
+        boolean horizontal = this.splitterHandleInfos.get(index).horizontal;
+
+        for (int i = 0; i < this.splitterHandles.size() && i < this.splitterHandleInfos.size(); i++)
+        {
+            if (i == index || this.splitterHandleInfos.get(i).horizontal == horizontal)
+            {
+                continue;
+            }
+
+            UIDraggable handle = this.splitterHandles.get(i);
+
+            if (this.isInsideSplitterIntersectionHitbox(handle, mouseX, mouseY))
+            {
+                this.draggedSplitterIndices.add(i);
+            }
+        }
+    }
+
+    private boolean isInsideSplitterIntersectionHitbox(UIDraggable handle, int mouseX, int mouseY)
+    {
+        int padding = SPLITTER_LINK_HITBOX_PADDING_PX;
+
+        return mouseX >= handle.area.x - padding
+            && mouseX < handle.area.ex() + padding
+            && mouseY >= handle.area.y - padding
+            && mouseY < handle.area.ey() + padding;
+    }
+
+    private void clearSplitterDragState()
+    {
+        this.draggedSplitterIndices.clear();
+    }
+
+    private void applySplitterDrag(ValueEditorLayout layout, int mouseX, int mouseY)
+    {
+        if (this.draggedSplitterIndices.isEmpty())
+        {
+            return;
+        }
+
+        BaseValue.edit(layout, (__) ->
+        {
+            List<EditorLayoutNode.SplitterNode> splitters = layout.getFilmSplitters();
+
+            for (int draggedIndex : this.draggedSplitterIndices)
+            {
+                this.applySplitterRatioFromMouse(splitters, draggedIndex, mouseX, mouseY);
+            }
+        });
+
+        this.setupEditorFlex(true);
+    }
+
+    private void applySplitterRatioFromMouse(List<EditorLayoutNode.SplitterNode> splitters, int index, int mouseX, int mouseY)
+    {
+        if (index < 0 || index >= splitters.size())
+        {
+            return;
+        }
+
+        float ratio = this.getSplitterRatioFromMouse(index, mouseX, mouseY);
+
+        if (ratio >= 0F)
+        {
+            splitters.get(index).setRatio(ratio);
         }
     }
 
@@ -1382,7 +1492,7 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
             this.applyPanelDropResult(this.draggingPanelId, this.dropTargetPanelId, this.dropTargetZone);
             this.clearPanelDragState();
         });
-        handle.hoverOnly().rendering((context) -> this.renderPanelDragHandle(context, handle));
+        handle.hoverOnly().cursors(GLFW.GLFW_HAND_CURSOR, GLFW.GLFW_HAND_CURSOR).rendering((context) -> this.renderPanelDragHandle(context, handle));
         return handle;
     }
 
@@ -1485,22 +1595,71 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
         }
         UIDraggable splitter = this.splitterHandles.get(index);
         EditorLayoutNode.SplitterHandleInfo info = this.splitterHandleInfos.get(index);
-        boolean active = splitter.area.isInside(context) || splitter.isDragging();
-        int lineColor = active ? BBSSettings.primaryColor(Colors.A50) : 0x22ffffff;
-        if (active)
+        int lineColor = BBSSettings.primaryColor(Colors.A100);
+
+        if (splitter.isDragging() || splitter.area.isInside(context))
         {
-            context.batcher.box(splitter.area.x, splitter.area.y, splitter.area.ex(), splitter.area.ey(), lineColor);
+            context.requestCursor(this.getSplitterCursor(index, context.mouseX, context.mouseY));
         }
+
+        if (!splitter.isDragging() && !this.draggedSplitterIndices.contains(index))
+        {
+            return;
+        }
+
         if (info.horizontal)
         {
             int cy = splitter.area.y + splitter.area.h / 2;
-            context.batcher.box(splitter.area.x, cy - 1, splitter.area.ex(), cy + 1, lineColor);
+            int half = SPLITTER_HANDLE_LINE_PX / 2;
+            context.batcher.box(splitter.area.x, cy - half, splitter.area.ex(), cy - half + SPLITTER_HANDLE_LINE_PX, lineColor);
         }
         else
         {
             int cx = splitter.area.x + splitter.area.w / 2;
-            context.batcher.box(cx - 1, splitter.area.y, cx + 1, splitter.area.ey(), lineColor);
+            int half = SPLITTER_HANDLE_LINE_PX / 2;
+            context.batcher.box(cx - half, splitter.area.y, cx - half + SPLITTER_HANDLE_LINE_PX, splitter.area.ey(), lineColor);
         }
+    }
+
+    private int getSplitterCursor(int index, int mouseX, int mouseY)
+    {
+        if (index < 0 || index >= this.splitterHandleInfos.size())
+        {
+            return GLFW.GLFW_ARROW_CURSOR;
+        }
+
+        EditorLayoutNode.SplitterHandleInfo info = this.splitterHandleInfos.get(index);
+
+        return this.isInsideSplitterIntersection(index, mouseX, mouseY)
+            ? GLFW.GLFW_CROSSHAIR_CURSOR
+            : info.horizontal
+            ? GLFW.GLFW_VRESIZE_CURSOR
+            : GLFW.GLFW_HRESIZE_CURSOR;
+    }
+
+    private boolean isInsideSplitterIntersection(int index, int mouseX, int mouseY)
+    {
+        if (index < 0 || index >= this.splitterHandleInfos.size())
+        {
+            return false;
+        }
+
+        boolean horizontal = this.splitterHandleInfos.get(index).horizontal;
+
+        for (int i = 0; i < this.splitterHandles.size() && i < this.splitterHandleInfos.size(); i++)
+        {
+            if (i == index || this.splitterHandleInfos.get(i).horizontal == horizontal)
+            {
+                continue;
+            }
+
+            if (this.isInsideSplitterIntersectionHitbox(this.splitterHandles.get(i), mouseX, mouseY))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void fillFilmContextMenu(ContextMenuManager menu)
@@ -1620,7 +1779,7 @@ public class UIFilmPanel extends UIDataDashboardPanel<Film> implements IFlightSu
 
         if (this.editor.area.w >= EDITOR_MIN_SIZE_FOR_PX_HANDLES && this.editor.area.h >= EDITOR_MIN_SIZE_FOR_PX_HANDLES)
         {
-            if (!this.layoutLocked && this.splitterHandles.size() == this.splitterHandleInfos.size())
+            if (this.splitterHandles.size() == this.splitterHandleInfos.size())
             {
                 this.syncSplitterHandleBounds();
             }

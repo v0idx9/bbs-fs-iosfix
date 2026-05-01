@@ -139,6 +139,9 @@ public class UIClips extends UIElement
     {
         super();
 
+        this.vertical.smoothScrolling(() -> !BBSSettings.scrollingDisableSmoothnessInEditors.get());
+        this.vertical.wheelScrollStep(this::getLayerHeight);
+
         this.copyPasteController = new UICopyPasteController(PresetManager.CLIPS, "_CopyClips")
             .supplier(this::copyClips)
             .consumer(this::pasteClips)
@@ -1875,7 +1878,7 @@ public class UIClips extends UIElement
     {
         if (this.selecting)
         {
-            context.batcher.normalizedBox(this.lastX, this.lastY, context.mouseX, context.mouseY, Colors.setA(Colors.ACTIVE, 0.25F));
+            context.batcher.normalizedBox(this.lastX, this.lastY, context.mouseX, context.mouseY, BBSSettings.accentOverlay(Colors.A25));
         }
     }
 

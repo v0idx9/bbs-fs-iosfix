@@ -111,7 +111,7 @@ public class UIKeyframes extends UIElement
                 p.resize();
             }
         });
-        this.labelResizer.hoverOnly();
+        this.labelResizer.hoverOnly().cursors(GLFW.GLFW_HRESIZE_CURSOR, GLFW.GLFW_HRESIZE_CURSOR);
         this.add(this.labelResizer);
 
         this.copyPasteController = new UICopyPasteController(PresetManager.KEYFRAMES, "_CopyKeyframes")
@@ -1220,7 +1220,7 @@ public class UIKeyframes extends UIElement
 
         if (this.selecting)
         {
-            context.batcher.normalizedBox(this.originalX, this.originalY, context.mouseX, context.mouseY, Colors.setA(Colors.ACTIVE, 0.25F));
+            context.batcher.normalizedBox(this.originalX, this.originalY, context.mouseX, context.mouseY, BBSSettings.accentOverlay(Colors.A25));
         }
 
         this.currentGraph.postRender(context);

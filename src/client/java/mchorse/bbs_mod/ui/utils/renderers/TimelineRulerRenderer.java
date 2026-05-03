@@ -5,6 +5,7 @@ import mchorse.bbs_mod.ui.framework.UIContext;
 import mchorse.bbs_mod.ui.utils.Area;
 import mchorse.bbs_mod.utils.colors.Colors;
 
+import java.util.function.Consumer;
 import java.util.function.IntFunction;
 import java.util.function.IntUnaryOperator;
 
@@ -39,6 +40,21 @@ public class TimelineRulerRenderer
         IntFunction<String> labelFormatter
     )
     {
+        render(context, area, mult, startTick, endTick, durationTick, toGraphX, labelFormatter, null);
+    }
+
+    public static void render(
+        UIContext context,
+        Area area,
+        int mult,
+        int startTick,
+        int endTick,
+        int durationTick,
+        IntUnaryOperator toGraphX,
+        IntFunction<String> labelFormatter,
+        Consumer<UIContext> rulerDecorator
+    )
+    {
         if (mult <= 0)
         {
             return;
@@ -49,6 +65,7 @@ public class TimelineRulerRenderer
         int majorTop = area.y + 2;
         int minorTop = Math.max(area.y + 12, timelineBottom - 7);
         int timelineEndX = durationTick > 0 ? toGraphX.applyAsInt(durationTick) : Integer.MAX_VALUE;
+        int visibleTimelineEx = Math.min(area.ex(), timelineEndX);
         int max = Integer.MAX_VALUE;
 
         int start = startTick - (startTick % mult);
@@ -61,11 +78,24 @@ public class TimelineRulerRenderer
         context.batcher.box(area.x, area.y, area.ex(), rulerBottom, BBSSettings.chromeSurface());
         context.batcher.box(area.x, area.y, area.ex(), rulerBottom, BBSSettings.backgroundTint(Colors.A6));
 
+        if (visibleTimelineEx < area.ex())
+        {
+            int rightX = Math.max(area.x, visibleTimelineEx);
+
+            context.batcher.box(rightX, area.y, area.ex(), rulerBottom, BBSSettings.chromeSurface());
+            context.batcher.box(rightX, area.y, area.ex(), rulerBottom, BBSSettings.backgroundTint(Colors.A6));
+        }
+
+        if (rulerDecorator != null)
+        {
+            rulerDecorator.accept(context);
+        }
+
         for (int tick = start; tick <= end; tick += mult)
         {
             int x = toGraphX.applyAsInt(tick);
 
-            if (x >= area.ex())
+            if (x >= area.ex() || x >= visibleTimelineEx)
             {
                 break;
             }

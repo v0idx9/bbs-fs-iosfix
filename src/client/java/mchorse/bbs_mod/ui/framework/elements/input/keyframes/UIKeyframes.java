@@ -85,6 +85,7 @@ public class UIKeyframes extends UIElement
 
     private final Consumer<Keyframe> callback;
     private Consumer<UIContext> backgroundRender;
+    private Consumer<UIContext> rulerRender;
     private Supplier<Integer> duration;
 
     private SheetCache cache;
@@ -831,6 +832,13 @@ public class UIKeyframes extends UIElement
         return this;
     }
 
+    public UIKeyframes rulerRenderer(Consumer<UIContext> rulerRender)
+    {
+        this.rulerRender = rulerRender;
+
+        return this;
+    }
+
     public UIKeyframes duration(Supplier<Integer> duration)
     {
         this.duration = duration;
@@ -1224,6 +1232,7 @@ public class UIKeyframes extends UIElement
         }
 
         this.currentGraph.postRender(context);
+        this.renderOverlay(context);
 
         context.batcher.unclip(context);
 
@@ -1232,6 +1241,19 @@ public class UIKeyframes extends UIElement
         {
             Area a = this.labelResizer.area;
             Scroll.bar(context.batcher, a.x, a.y, a.ex(), a.ey(), BBSSettings.dividerColor());
+        }
+    }
+
+    protected void renderOverlay(UIContext context)
+    {
+        this.currentGraph.renderTopmostKeyframes(context);
+    }
+
+    public void renderRuler(UIContext context)
+    {
+        if (this.rulerRender != null)
+        {
+            this.rulerRender.accept(context);
         }
     }
 

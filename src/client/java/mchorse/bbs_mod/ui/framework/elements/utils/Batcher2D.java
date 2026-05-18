@@ -61,14 +61,7 @@ public class Batcher2D
 
     public void clip(int x, int y, int w, int h, UIContext context)
     {
-        this.clip(
-            context.toScreenX(context.globalX(x)),
-            context.toScreenY(context.globalY(y)),
-            context.toScreenWidth(w),
-            context.toScreenHeight(h),
-            context.menu.width,
-            context.menu.height
-        );
+        this.clip(context.globalX(x), context.globalY(y), w, h, context.menu.width, context.menu.height);
     }
 
     /**
@@ -469,6 +462,11 @@ public class Batcher2D
 
     public void text(String label, float x, float y, int color, boolean shadow)
     {
+        if (Colors.getA(color) <= 0F)
+        {
+            color = Colors.opaque(color);
+        }
+
         this.context.drawText(this.font.getRenderer(), label, (int) x, (int) y, color, shadow);
         this.context.draw();
 

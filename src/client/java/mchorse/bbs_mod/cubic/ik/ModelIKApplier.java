@@ -23,7 +23,7 @@ final class ModelIKApplier
     {
     }
 
-    public static void apply(IModel model, List<ModelIKCache.CompiledChain> chains, Map<String, Vector3f> controllerTargets, Map<String, Vector3f> prevNormals, float hysteresisRad, float singularityRad, Map<String, Float> poseFixByBone)
+    public static void apply(IModel model, List<ModelIKCache.CompiledChain> chains, Map<String, Vector3f> controllerTargets, Map<String, Float> poseFixByBone)
     {
         if (model == null || chains == null || chains.isEmpty())
         {
@@ -48,11 +48,11 @@ final class ModelIKApplier
 
         for (ModelIKCache.CompiledChain chain : chains)
         {
-            applyChain(model, chain, frames, controllerTargets, prevNormals, hysteresisRad, singularityRad, poseFixByBone);
+            applyChain(model, chain, frames, controllerTargets, poseFixByBone);
         }
     }
 
-    private static void applyChain(IModel model, ModelIKCache.CompiledChain chain, Map<String, PivotFrame> frames, Map<String, Vector3f> controllerTargets, Map<String, Vector3f> prevNormals, float hysteresisRad, float singularityRad, Map<String, Float> poseFixByBone)
+    private static void applyChain(IModel model, ModelIKCache.CompiledChain chain, Map<String, PivotFrame> frames, Map<String, Vector3f> controllerTargets, Map<String, Float> poseFixByBone)
     {
         float poseFix = getChainPoseFix(chain, poseFixByBone);
         float weight = chain.weight() * (1F - poseFix);
@@ -114,8 +114,7 @@ final class ModelIKApplier
             pole.add(controllerPos);
         }
 
-        Vector3f prevNormal = prevNormals == null ? null : prevNormals.get(chain.controller());
-        List<Vector3f> solved = FabrikSolver.solve(currentPositions, target, pole, prevNormal, hysteresisRad, singularityRad, MAX_ITERATIONS, TOLERANCE);
+        List<Vector3f> solved = FabrikSolver.solve(currentPositions, target, pole, MAX_ITERATIONS, TOLERANCE);
         if (rootParentRotation == null)
         {
             return;
@@ -123,22 +122,6 @@ final class ModelIKApplier
 
         Vector3f[] solvedArray = solved.toArray(new Vector3f[solved.size()]);
         ModelRotationBlender.applyWeightedRotations(model, rootParentRotation, chainIds, solvedArray, weight);
-
-        if (prevNormals != null && solved.size() >= 3)
-        {
-            Vector3f a = solved.get(0);
-            Vector3f b = solved.get(1);
-            Vector3f c = solved.get(2);
-            Vector3f ba = new Vector3f(b).sub(a);
-            Vector3f cb = new Vector3f(c).sub(b);
-            Vector3f n = ba.cross(cb);
-            if (n.lengthSquared() > 1.0e-8f)
-            {
-                n.normalize();
-                Vector3f store = prevNormals.computeIfAbsent(chain.controller(), (k) -> new Vector3f());
-                store.set(n);
-            }
-        }
     }
 
     private static float getChainPoseFix(ModelIKCache.CompiledChain chain, Map<String, Float> poseFixByBone)

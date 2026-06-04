@@ -1,5 +1,6 @@
 package mchorse.bbs_mod.cubic.ik;
 
+import mchorse.bbs_mod.utils.joml.Matrices;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
@@ -7,9 +8,16 @@ import java.util.List;
 
 /**
  * Single-chain IK modeled after Blender: the positions are solved to reach the
- * target (analytic for a two-bone limb, FABRIK otherwise), then the whole bend
+ * target (analytic for a two-bone limb, CCD otherwise), then the whole bend
  * plane is rotated about the root-to-tip axis towards the pole and offset by the
  * pole angle. With no pole the chain keeps the side it was posed towards.
+ *
+ * <p>When per-joint {@link Limit}s are supplied the solve runs as constrained
+ * CCD: every sweep is followed by a clamp pass that reconstructs each bone's
+ * local rotation exactly as the renderer does ({@link Matrices#fromToMirroredX}
+ * then ZYX euler) and clamps it to the bone's rotation limits, donating the
+ * remainder to the free joints — so the chain honours the limits and still
+ * reaches as far as they allow.
  */
 final class IKSolver
 {
@@ -23,7 +31,21 @@ final class IKSolver
     {
     }
 
+    /**
+     * Per-bone rotation limit for constrained CCD. {@code restDir} is the bone's
+     * local rest direction towards its child (the same vector the renderer uses
+     * to reconstruct the bone's local rotation); min/max are euler ZYX degrees.
+     */
+    public record Limit(boolean enabled, Vector3f restDir, float minX, float minY, float minZ, float maxX, float maxY, float maxZ)
+    {
+    }
+
     public static List<Vector3f> solve(List<Vector3f> positions, Vector3f target, boolean applyPole, float poleAngleRad, float softness, int maxIterations, float tolerance)
+    {
+        return solve(positions, target, applyPole, poleAngleRad, softness, maxIterations, tolerance, null, null);
+    }
+
+    public static List<Vector3f> solve(List<Vector3f> positions, Vector3f target, boolean applyPole, float poleAngleRad, float softness, int maxIterations, float tolerance, Limit[] limits, Quaternionf rootParentRotation)
     {
         int n = positions.size();
 
@@ -32,13 +54,11 @@ final class IKSolver
             return positions;
         }
 
-        float[] d = new float[n - 1];
         float total = 0F;
 
         for (int i = 0; i < n - 1; i++)
         {
-            d[i] = positions.get(i).distance(positions.get(i + 1));
-            total += d[i];
+            total += positions.get(i).distance(positions.get(i + 1));
         }
 
         if (total <= EPS)
@@ -50,16 +70,34 @@ final class IKSolver
         Vector3f goal = clampReach(root, target, total, softness);
         Vector3f hinge = applyPole ? captureHingeAxis(positions) : null;
 
+        boolean constrained = limits != null && rootParentRotation != null;
+
         if (n == 3)
         {
-            solveTwoBone(positions, root, goal, d[0], d[1]);
+            /* Analytic is ideal for a two-bone limb — full reach, no flip, clean
+             * pole control. The pole defines the hinge; limits ride on top as
+             * range clamps (e.g. stop the elbow hyperextending). */
+            solveTwoBone(positions, root, goal);
+            orientBend(positions, hinge, poleAngleRad);
+
+            if (constrained)
+            {
+                clampRanges(positions, limits, rootParentRotation);
+            }
+        }
+        else if (constrained)
+        {
+            /* Longer chain: angle-space CCD keeps each joint in its DOF, then the
+             * pole rotates the whole chain about root->tip — that preserves every
+             * joint's local rotation, so it can't break the limits. */
+            solveCCD(positions, root, goal, maxIterations, tolerance, limits, rootParentRotation);
+            orientBend(positions, hinge, poleAngleRad);
         }
         else
         {
-            solveFabrik(positions, root, goal, d, maxIterations, tolerance);
+            solveCCD(positions, root, goal, maxIterations, tolerance, null, null);
+            orientBend(positions, hinge, poleAngleRad);
         }
-
-        orientBend(positions, hinge, poleAngleRad);
 
         return positions;
     }
@@ -102,8 +140,10 @@ final class IKSolver
         return goal;
     }
 
-    private static void solveTwoBone(List<Vector3f> p, Vector3f root, Vector3f goal, float l1, float l2)
+    private static void solveTwoBone(List<Vector3f> p, Vector3f root, Vector3f goal)
     {
+        float l1 = root.distance(p.get(1));
+        float l2 = p.get(1).distance(p.get(2));
         Vector3f dir = new Vector3f(goal).sub(root);
         float dist = dir.length();
 
@@ -131,55 +171,237 @@ final class IKSolver
         p.get(2).set(goal);
     }
 
-    private static void solveFabrik(List<Vector3f> p, Vector3f root, Vector3f goal, float[] d, int maxIterations, float tolerance)
+    /**
+     * Cyclic Coordinate Descent: each sweep rotates every joint (tip-to-root) so
+     * the effector aims at the goal. Rotations are rigid, so bone lengths are
+     * preserved. When {@code limits} are present, each joint's rotation is
+     * restricted to its allowed local DOF DURING the sweep (not clamped after),
+     * so a hinge only ever moves on its free axis and the free joints naturally
+     * orient the chain to reach — instead of a post-clamp fighting the solve.
+     */
+    private static void solveCCD(List<Vector3f> p, Vector3f root, Vector3f goal, int maxIterations, float tolerance, Limit[] limits, Quaternionf rootParentRotation)
     {
         int n = p.size();
-        Vector3f dir = new Vector3f();
+        float tolSq = tolerance * tolerance;
+        Quaternionf[] parentWorld = limits == null ? null : new Quaternionf[n];
 
         for (int iter = 0; iter < maxIterations; iter++)
         {
-            if (p.get(n - 1).distanceSquared(goal) <= tolerance * tolerance)
+            if (p.get(n - 1).distanceSquared(goal) <= tolSq)
             {
                 break;
             }
 
-            p.get(n - 1).set(goal);
-
-            for (int i = n - 2; i >= 0; i--)
+            if (limits != null)
             {
-                Vector3f pi = p.get(i);
-                Vector3f pj = p.get(i + 1);
-
-                dir.set(pi).sub(pj);
-                float lenSq = dir.lengthSquared();
-
-                if (lenSq < 1.0e-10f)
-                {
-                    continue;
-                }
-
-                dir.mul((float) (d[i] / Math.sqrt(lenSq)));
-                pi.set(pj).add(dir);
+                computeParentFrames(p, limits, rootParentRotation, parentWorld);
             }
 
+            ccdSweep(p, goal, limits, parentWorld);
             p.get(0).set(root);
+        }
+    }
 
-            for (int i = 0; i < n - 1; i++)
+    /**
+     * Forward pass (root-to-tip) building each joint's parent world frame from
+     * the current positions. During the following tip-to-root sweep a joint's
+     * ancestors have not moved yet, so these frames stay valid when the joint is
+     * reached — letting the per-joint limit be expressed in the correct local space.
+     */
+    private static void computeParentFrames(List<Vector3f> p, Limit[] limits, Quaternionf rootParentRotation, Quaternionf[] parentWorld)
+    {
+        int n = p.size();
+        Vector3f dirWorld = new Vector3f();
+        Vector3f dirLocal = new Vector3f();
+        parentWorld[0] = new Quaternionf(rootParentRotation);
+
+        for (int i = 0; i < n - 1; i++)
+        {
+            Quaternionf local = localRotation(p, i, limits[i], parentWorld[i], dirWorld, dirLocal);
+            parentWorld[i + 1] = new Quaternionf(parentWorld[i]);
+
+            if (local != null)
             {
-                Vector3f pi = p.get(i);
-                Vector3f pj = p.get(i + 1);
-
-                dir.set(pj).sub(pi);
-                float lenSq = dir.lengthSquared();
-
-                if (lenSq < 1.0e-10f)
-                {
-                    continue;
-                }
-
-                dir.mul((float) (d[i] / Math.sqrt(lenSq)));
-                pj.set(pi).add(dir);
+                Vector3f euler = Matrices.toEulerZYXDegrees(local);
+                parentWorld[i + 1].mul(Matrices.toQuaternionZYXDegrees(euler.x, euler.y, euler.z));
             }
+        }
+    }
+
+    /** Reconstructs joint {@code i}'s local rotation (relative to rest) from its current world direction, the renderer's way. */
+    private static Quaternionf localRotation(List<Vector3f> p, int i, Limit lim, Quaternionf parentWorld, Vector3f dirWorld, Vector3f dirLocal)
+    {
+        if (lim == null || lim.restDir() == null)
+        {
+            return null;
+        }
+
+        dirWorld.set(p.get(i + 1)).sub(p.get(i));
+
+        if (!normalize(dirWorld))
+        {
+            return null;
+        }
+
+        dirLocal.set(dirWorld);
+        new Quaternionf(parentWorld).conjugate().transform(dirLocal);
+
+        if (!normalize(dirLocal))
+        {
+            return null;
+        }
+
+        return Matrices.fromToMirroredX(lim.restDir(), dirLocal);
+    }
+
+    private static void ccdSweep(List<Vector3f> p, Vector3f goal, Limit[] limits, Quaternionf[] parentWorld)
+    {
+        int n = p.size();
+        Vector3f toEff = new Vector3f();
+        Vector3f toGoal = new Vector3f();
+        Vector3f dirWorld = new Vector3f();
+        Vector3f dirLocal = new Vector3f();
+        Vector3f rel = new Vector3f();
+
+        for (int j = n - 2; j >= 0; j--)
+        {
+            Vector3f pj = p.get(j);
+
+            toEff.set(p.get(n - 1)).sub(pj);
+            toGoal.set(goal).sub(pj);
+
+            if (toEff.lengthSquared() < EPS * EPS || toGoal.lengthSquared() < EPS * EPS)
+            {
+                continue;
+            }
+
+            Quaternionf free = new Quaternionf().rotationTo(toEff, toGoal);
+            Quaternionf q = free;
+            Limit lim = limits == null ? null : limits[j];
+
+            if (lim != null && lim.enabled())
+            {
+                q = restrictToLimit(p, j, lim, parentWorld[j], free, dirWorld, dirLocal);
+            }
+
+            if (q == null)
+            {
+                continue;
+            }
+
+            for (int k = j + 1; k < n; k++)
+            {
+                rel.set(p.get(k)).sub(pj);
+                q.transform(rel);
+                p.get(k).set(pj).add(rel);
+            }
+        }
+    }
+
+    /**
+     * Restricts a joint's free CCD rotation to its allowed local DOF: takes the
+     * candidate local rotation (in the parent's frame), clamps each euler axis to
+     * the bone's limits, and returns the WORLD rotation that brings the bone from
+     * its current to that clamped orientation (to apply to the downstream chain).
+     * A hinge (two axes locked to 0) thus only ever rotates on its free axis.
+     */
+    private static Quaternionf restrictToLimit(List<Vector3f> p, int j, Limit lim, Quaternionf parentWorld, Quaternionf free, Vector3f dirWorld, Vector3f dirLocal)
+    {
+        Quaternionf curLocal = localRotation(p, j, lim, parentWorld, dirWorld, dirLocal);
+
+        if (curLocal == null)
+        {
+            return free;
+        }
+
+        Quaternionf invParent = new Quaternionf(parentWorld).conjugate();
+        Quaternionf candLocal = new Quaternionf(invParent).mul(free).mul(parentWorld).mul(curLocal);
+        Vector3f euler = Matrices.toEulerZYXDegrees(candLocal);
+
+        float cx = clamp(euler.x, lim.minX(), lim.maxX());
+        float cy = clamp(euler.y, lim.minY(), lim.maxY());
+        float cz = clamp(euler.z, lim.minZ(), lim.maxZ());
+
+        Quaternionf clampedLocal = Matrices.toQuaternionZYXDegrees(cx, cy, cz);
+        Quaternionf curBoneWorld = new Quaternionf(parentWorld).mul(curLocal);
+        Quaternionf clampedBoneWorld = new Quaternionf(parentWorld).mul(clampedLocal);
+
+        return clampedBoneWorld.mul(curBoneWorld.conjugate());
+    }
+
+    /**
+     * Range-limit refinement applied on top of a GOOD solve (analytic + pole):
+     * reconstructs each bone's local rotation the renderer's way, clamps its euler
+     * to the bone's limits, and rigidly carries the downstream chain. Because the
+     * solve already produced a clean, reaching bend, this only bites at the limit
+     * extremes (e.g. a hyperextending elbow) — it enforces the range instead of
+     * fighting the reach.
+     */
+    private static void clampRanges(List<Vector3f> p, Limit[] limits, Quaternionf rootParentRotation)
+    {
+        int n = p.size();
+        Quaternionf parentWorld = new Quaternionf(rootParentRotation);
+        Vector3f dirWorld = new Vector3f();
+        Vector3f dirLocal = new Vector3f();
+        Vector3f rel = new Vector3f();
+
+        for (int i = 0; i < n - 1; i++)
+        {
+            Limit lim = i < limits.length ? limits[i] : null;
+
+            if (lim == null || lim.restDir() == null)
+            {
+                continue;
+            }
+
+            dirWorld.set(p.get(i + 1)).sub(p.get(i));
+
+            if (!normalize(dirWorld))
+            {
+                continue;
+            }
+
+            dirLocal.set(dirWorld);
+            new Quaternionf(parentWorld).conjugate().transform(dirLocal);
+
+            if (!normalize(dirLocal))
+            {
+                continue;
+            }
+
+            Vector3f euler = Matrices.toEulerZYXDegrees(Matrices.fromToMirroredX(lim.restDir(), dirLocal));
+
+            if (lim.enabled())
+            {
+                float cx = clamp(euler.x, lim.minX(), lim.maxX());
+                float cy = clamp(euler.y, lim.minY(), lim.maxY());
+                float cz = clamp(euler.z, lim.minZ(), lim.maxZ());
+
+                if (cx != euler.x || cy != euler.y || cz != euler.z)
+                {
+                    Quaternionf clampedLocal = Matrices.toQuaternionZYXDegrees(cx, cy, cz);
+                    Vector3f clampedDirWorld = new Vector3f(lim.restDir());
+                    clampedLocal.transform(clampedDirWorld);
+                    parentWorld.transform(clampedDirWorld);
+
+                    if (normalize(clampedDirWorld))
+                    {
+                        Quaternionf q = new Quaternionf().rotationTo(dirWorld, clampedDirWorld);
+                        Vector3f pi = p.get(i);
+
+                        for (int k = i + 1; k < n; k++)
+                        {
+                            rel.set(p.get(k)).sub(pi);
+                            q.transform(rel);
+                            p.get(k).set(pi).add(rel);
+                        }
+
+                        euler.set(cx, cy, cz);
+                    }
+                }
+            }
+
+            parentWorld.mul(Matrices.toQuaternionZYXDegrees(euler.x, euler.y, euler.z));
         }
     }
 
@@ -292,6 +514,18 @@ final class IKSolver
         hinge = new Vector3f(limb).cross(0F, 1F, 0F);
 
         return normalize(hinge) ? hinge : null;
+    }
+
+    private static float clamp(float value, float min, float max)
+    {
+        if (min > max)
+        {
+            float t = min;
+            min = max;
+            max = t;
+        }
+
+        return value < min ? min : Math.min(value, max);
     }
 
     private static Vector3f perpendicular(Vector3f a, Vector3f b, Vector3f c)

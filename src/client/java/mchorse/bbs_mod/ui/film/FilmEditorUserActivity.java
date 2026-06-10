@@ -12,9 +12,6 @@ import org.lwjgl.glfw.GLFW;
  */
 public final class FilmEditorUserActivity
 {
-    /**
-     * Idle time after which the user is considered AFK (no time added to the active counter).
-     */
     private static final long AFK_IDLE_MS = 120_000L;
 
     private int lastMouseX = Integer.MIN_VALUE;
@@ -35,9 +32,6 @@ public final class FilmEditorUserActivity
         this.lastActivityMs = System.currentTimeMillis();
     }
 
-    /**
-     * @return {@code true} if the non-AFK timer should accumulate the elapsed real-time delta for this frame.
-     */
     public boolean shouldAccumulateActiveTime(MinecraftClient mc, UIContext context, long nowMs)
     {
         if (!mc.isWindowFocused() || mc.isPaused())
@@ -53,43 +47,14 @@ public final class FilmEditorUserActivity
         return nowMs - this.lastActivityMs < AFK_IDLE_MS;
     }
 
+    // ==================================================
+    // Исправление: полностью отключаем detectActivity,
+    // чтобы избежать IndexOutOfBoundsException на iOS.
+    // ==================================================
     private boolean detectActivity(MinecraftClient mc, UIContext context)
     {
-        if (context.mouseX != this.lastMouseX || context.mouseY != this.lastMouseY)
-        {
-            this.lastMouseX = context.mouseX;
-            this.lastMouseY = context.mouseY;
-            return true;
-        }
-
-        if (context.mouseWheel != 0D || context.mouseWheelHorizontal != 0D)
-        {
-            return true;
-        }
-
-        long handle = mc.getWindow().getHandle();
-
-        for (int b = 0; b <= GLFW.GLFW_MOUSE_BUTTON_LAST; b++)
-        {
-            if (GLFW.glfwGetMouseButton(handle, b) == GLFW.GLFW_PRESS)
-            {
-                return true;
-            }
-        }
-
-        if (context.getKeyAction() != KeyAction.RELEASED && context.getKeyCode() != GLFW.GLFW_KEY_UNKNOWN)
-        {
-            return true;
-        }
-
-        for (int key = GLFW.GLFW_KEY_SPACE; key <= GLFW.GLFW_KEY_LAST; key++)
-        {
-            if (key != GLFW.GLFW_KEY_UNKNOWN && InputUtil.isKeyPressed(handle, key))
-            {
-                return true;
-            }
-        }
-
+        // На iOS вызов GLFW.glfwGetKey с некоторыми кодами клавиш
+        // приводит к падению. Отключаем определение активности.
         return false;
     }
 }

@@ -6,10 +6,6 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.util.InputUtil;
 import org.lwjgl.glfw.GLFW;
 
-/**
- * Tracks whether the user is actively editing (not AFK) for the film's {@code time_spent_active} counter.
- * AFK = no keyboard/mouse input for {@link #AFK_IDLE_MS} while the game window is focused.
- */
 public final class FilmEditorUserActivity
 {
     private static final long AFK_IDLE_MS = 120_000L;
@@ -47,14 +43,45 @@ public final class FilmEditorUserActivity
         return nowMs - this.lastActivityMs < AFK_IDLE_MS;
     }
 
-    // ==================================================
-    // Исправление: полностью отключаем detectActivity,
-    // чтобы избежать IndexOutOfBoundsException на iOS.
-    // ==================================================
     private boolean detectActivity(MinecraftClient mc, UIContext context)
     {
-        // На iOS вызов GLFW.glfwGetKey с некоторыми кодами клавиш
-        // приводит к падению. Отключаем определение активности.
+        // Движение мыши
+        if (context.mouseX != this.lastMouseX || context.mouseY != this.lastMouseY)
+        {
+            this.lastMouseX = context.mouseX;
+            this.lastMouseY = context.mouseY;
+            return true;
+        }
+
+        // Колёсико мыши
+        if (context.mouseWheel != 0D || context.mouseWheelHorizontal != 0D)
+        {
+            return true;
+        }
+
+        long handle = mc.getWindow().getHandle();
+
+        // Кнопки мыши
+        for (int b = 0; b <= GLFW.GLFW_MOUSE_BUTTON_LAST; b++)
+        {
+            if (GLFW.glfwGetMouseButton(handle, b) == GLFW.GLFW_PRESS)
+            {
+                return true;
+            }
+        }
+
+        // Контекстная клавиша (например, нажатие на кнопку в UI)
+        if (context.getKeyAction() != KeyAction.RELEASED && context.getKeyCode() != GLFW.GLFW_KEY_UNKNOWN)
+        {
+            return true;
+        }
+
+        // *** ИСПРАВЛЕНИЕ: удалён цикл по всем клавишам, который падал на iOS ***
+        // Вместо этого, если нужна проверка нажатия любых клавиш, можно оставить
+        // только несколько основных (например, WASD, стрелки), но для работы камеры
+        // достаточно проверки мыши и контекстной клавиши.
+        // Оставляем пустым – краша не будет, а камера будет работать.
+
         return false;
     }
 }
